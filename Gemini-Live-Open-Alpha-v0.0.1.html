@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemini Live</title>
+    <style>
+        :root {
+            --primary-color: #6200ee;
+            --secondary-color: #03dac6;
+            --background-color: #f5f5f5;
+            --text-color: #333333;
+        }
+        body {
+            font-family: 'Roboto', Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: var(--background-color);
+            color: var(--text-color);
+        }
+        .container {
+            text-align: center;
+            background-color: white;
+            padding: 3rem;
+            border-radius: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+            max-width: 500px;
+            width: 90%;
+        }
+        h1 {
+            color: var(--primary-color);
+            margin-bottom: 2rem;
+            font-size: 2.5rem;
+        }
+        #apiKeyInput {
+            margin-bottom: 1.5rem;
+            padding: 0.8rem;
+            width: 100%;
+            border: none;
+            border-bottom: 2px solid var(--primary-color);
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            background-color: transparent;
+        }
+        #apiKeyInput:focus {
+            outline: none;
+            border-bottom-color: var(--secondary-color);
+        }
+        #startButton {
+            padding: 0.8rem 2rem;
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 1rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        #startButton:hover {
+            background-color: var(--secondary-color);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+            transform: translateY(-2px);
+        }
+        #status {
+            margin-top: 2rem;
+            font-style: italic;
+            color: #666;
+        }
+        #animation {
+            width: 80px;
+            height: 80px;
+            margin: 2rem auto;
+            border: 4px solid var(--primary-color);
+            border-radius: 50%;
+            border-top: 4px solid var(--secondary-color);
+            animation: spin 1s linear infinite;
+            display: none;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        #video, #canvas {
+            display: none;
+        }
+        #waveform {
+            width: 100%;
+            height: 100px;
+            background-color: #f0f0f0;
+            margin-top: 1rem;
+            position: relative;
+            overflow: hidden;
+        }
+        .wave {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: space-around;
+            align-items: flex-end;
+        }
+        .wave-bar {
+            width: 3px;
+            background-color: var(--primary-color);
+            transition: height 0.1s ease;
+        }
+        .ai-wave .wave-bar {
+            background-color: var(--secondary-color);
+        }
+
+        #videoContainer {
+            width: 100%;
+            max-width: 480px;
+            margin: 1rem auto;
+            position: relative;
+        }
+        #video {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        #canvas {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Gemini Live</h1>
+        <input type="text" id="apiKeyInput" placeholder="Gemini APIキーを入力">
+        <button id="startButton">▶️ 会話開始</button>
+        <div id="animation"></div>
+        <p id="status"></p>
+        <div id="videoContainer">
+            <video id="video" autoplay playsinline></video>
+        </div>
+        <canvas id="canvas"></canvas>
+        <div id="waveform">
+            <div class="wave"></div>
+        </div>
+        <button id="interruptButton" style="display: none;">会話を中断</button>
+    </div>
+
+    <script>
+        const apiKeyInput = document.getElementById('apiKeyInput');
+        const startButton = document.getElementById('startButton');
+        const statusElement = document.getElementById('status');
+        const animationElement = document.getElementById('animation');
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const waveform = document.querySelector('.wave');
+        const BAR_COUNT = 50;
+        let isAISpeaking = false;
+        const interruptButton = document.getElementById('interruptButton');
+        let currentUtterance = null;
+
+        let isProcessing = false;
+        let recognition;
+        let synthesis;
+
+        startButton.addEventListener('click', startConversation);
+        interruptButton.addEventListener('click', interruptConversation);
+
+        async function startConversation() {
+            const apiKey = apiKeyInput.value.trim();
+            if (!apiKey) {
+                alert('APIキーを入力してください。');
+                return;
+            }
+
+            isProcessing = true;
+            animationElement.style.display = 'block';
+            statusElement.textContent = '会話の準備中...';
+
+            try {
+                await initializeAudio();
+                await initializeVideo();
+                await initializeGeminiAPI(apiKey);
+
+                statusElement.textContent = '会話の準備ができました。話しかけてください。';
+                startListening();
+                startVideoProcessing();
+                interruptButton.style.display = 'inline-block';
+            } catch (error) {
+                console.error('初期化エラー:', error);
+                statusElement.textContent = `エラーが発生しました: ${error.message}`;
+            } finally {
+                isProcessing = false;
+                animationElement.style.display = 'none';
+            }
+        }
+
+        async function initializeAudio() {
+            return new Promise((resolve, reject) => {
+                try {
+                    recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+                    recognition.lang = 'ja-JP';
+                    recognition.continuous = true;
+                    recognition.interimResults = true;
+
+                    recognition.onresult = handleSpeechResult;
+                    recognition.onstart = () => startWaveformAnimation(false);
+                    recognition.onend = () => isAISpeaking = false;
+                    recognition.onerror = (event) => {
+                        console.error('音声認識エラー:', event.error);
+                        reject(new Error('音声認識の初期化に失敗しました: ' + event.error));
+                    };
+
+                    synthesis = window.speechSynthesis;
+
+                    createWaveform();
+                    resolve();
+                } catch (error) {
+                    reject(new Error('音声機能の初期化に失敗しました: ' + error.message));
+                }
+            });
+        }
+
+        async function initializeVideo() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                await video.play();
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                startVideoProcessing();
+            } catch (error) {
+                console.error('ビデオ初期化エラー:', error);
+                throw new Error('カメラへのアクセスに失敗しました: ' + error.message);
+            }
+        }
+
+        async function initializeGeminiAPI(apiKey) {
+            // ここでGemini APIの初期化を行います
+            // 実際の実装はGemini APIのドキュメントに従ってください
+            console.log('Gemini API initialized with key:', apiKey);
+            // 仮のエラーチェック
+            if (apiKey.length < 10) {
+                throw new Error('無効なAPIキーです。正しいキーを入力してください。');
+            }
+        }
+
+        function startListening() {
+            recognition.start();
+            startWaveformAnimation(false);
+        }
+
+        function handleSpeechResult(event) {
+            const transcript = Array.from(event.results)
+                .map(result => result[0].transcript)
+                .join('');
+
+            if (event.results[0].isFinal) {
+                interruptConversation(); // AIの発話中でも新しい入力を処理
+                processInput(transcript);
+            }
+        }
+
+        async function processInput(text) {
+            statusElement.textContent = '処理中...';
+            try {
+                const response = await sendToGeminiAPI(text);
+                speakResponse(response);
+                statusElement.textContent = response;
+            } catch (error) {
+                console.error('処理エラー:', error);
+                statusElement.textContent = 'エラーが発生しました: ' + error.message;
+            }
+        }
+
+        async function sendToGeminiAPI(text) {
+            // ここでGemini APIにリクエストを送信します
+            // 実際の実装はGemini APIのドキュメントに従ってください
+            return new Promise((resolve, reject) => {
+                setTimeout(() => {
+                    if (Math.random() > 0.2) {
+                        resolve(`Gemini: "${text}"に対する応答です。`);
+                    } else {
+                        reject(new Error('APIリクエストに失敗しました。'));
+                    }
+                }, 1000);
+            });
+        }
+
+        function speakResponse(text) {
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'ja-JP';
+            utterance.onstart = () => {
+                startWaveformAnimation(true);
+                interruptButton.style.display = 'inline-block';
+            };
+            utterance.onend = () => {
+                isAISpeaking = false;
+                interruptButton.style.display = 'none';
+                startListening();
+            };
+            currentUtterance = utterance;
+            synthesis.speak(utterance);
+        }
+
+        function startVideoProcessing() {
+            setInterval(() => {
+                if (!isProcessing) {
+                    captureFrame();
+                }
+            }, 500);
+        }
+
+        function captureFrame() {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const imageData = canvas.toDataURL('image/jpeg');
+            processImage(imageData);
+        }
+
+        async function processImage(imageData) {
+            // ここでGemini APIに画像データを送信します
+            // 実際の実装はGemini APIのドキュメントに従ってください
+            console.log('画像処理:', imageData.substring(0, 50) + '...');
+        }
+
+        function createWaveform() {
+            waveform.innerHTML = '';
+            for (let i = 0; i < BAR_COUNT; i++) {
+                const bar = document.createElement('div');
+                bar.className = 'wave-bar';
+                waveform.appendChild(bar);
+            }
+        }
+
+        function updateWaveform(amplitude) {
+            const bars = waveform.children;
+            for (let i = 0; i < BAR_COUNT; i++) {
+                const height = Math.random() * amplitude;
+                bars[i].style.height = `${height}%`;
+            }
+        }
+
+        function startWaveformAnimation(isAI) {
+            isAISpeaking = isAI;
+            waveform.classList.toggle('ai-wave', isAI);
+            function animate() {
+                if ((isAI && isAISpeaking) || (!isAI && !isAISpeaking)) {
+                    const maxAmplitude = isAI ? 80 : 60;
+                    updateWaveform(maxAmplitude);
+                    requestAnimationFrame(animate);
+                }
+            }
+            animate();
+        }
+
+        function interruptConversation() {
+            if (currentUtterance) {
+                synthesis.cancel();
+                isAISpeaking = false;
+                interruptButton.style.display = 'none';
+                startListening();
+            }
+        }
+
+        createWaveform();
+    </script>
+</body>
+</html>
